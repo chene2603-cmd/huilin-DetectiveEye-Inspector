@@ -1,0 +1,43 @@
+# 侦探眼探长 - 系统配置
+system:
+  max_workers: 4
+  gpu_memory_limit: 0.8
+  temp_cleanup: true
+  ffmpeg_path: "runtime/ffmpeg/ffmpeg"
+  log_level: "INFO"
+
+video:
+  preview_fps: 1
+  detail_fps: 6
+  scene_threshold: 0.3
+  min_segment_duration: 2.0
+  max_segment_duration: 300.0
+
+models:
+  yolo:
+    model_path: "models/yolov8n.pt"
+    confidence: 0.4
+    batch_size: 8
+    gpu_memory_limit: 0.8
+    warmup: true
+    custom_classes: []
+    
+  ocr:
+    languages: ["ch_sim", "en"]
+    gpu: true
+    batch_size: 16
+    confidence_threshold: 0.3
+
+rules:
+  template_path: "config/keywords.json"
+  min_confidence: 0.3
+  fast_mode: true
+  keyword_expansion: true
+
+output:
+  format: "both"  # json, markdown, both
+  save_frames: true
+  frame_quality: 85
+  create_visualizations: true
+  create_collage: true
+  compress_output: false
