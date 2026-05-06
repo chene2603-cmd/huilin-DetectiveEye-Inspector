@@ -1,389 +1,150 @@
 """
-逻辑调度与模板固化层 - 规则引擎
+规则引擎模块
+结合视觉检测、OCR 文字与用户查询意图，通过责任链模式匹配行为证据
 """
 
 import json
 import re
-from typing import List, Dict, Any, Tuple, Optional
-from dataclasses import dataclass, asdict
-import yaml
 from pathlib import Path
-from datetime import datetime
-import jieba
-import jieba.analyse
+from typing import List, Dict, Any, Optional
+from core.handlers import (
+    BaseHandler,
+    PhoneUsageHandler,
+    SleepingHandler,
+    GeneralKeywordHandler
+)
 
-@dataclass
+
 class Evidence:
-    """证据"""
-    id: str
-    time_range: Tuple[float, float]  # 开始时间和结束时间
-    summary: str
-    description: str
-    confidence: float
-    detections: List[Dict]  # 视觉检测结果
-    ocr_results: List[Dict]  # OCR识别结果
-    frame_paths: List[str]  # 关键帧路径
-    video_path: str
-    
-    def to_dict(self):
-        return asdict(self)
+    """证据对象，统一封装分析结果"""
+    def __init__(self, evidence_id: str, time_range, summary: str,
+                 description: str, confidence: float,
+                 detections: List, ocr_results: List,
+                 frame_paths: List[str]):
+        self.id = evidence_id
+        self.time_range = time_range          # (start, end) 秒
+        self.summary = summary
+        self.description = description
+        self.confidence = confidence
+        self.detections = detections
+        self.ocr_results = ocr_results
+        self.frame_paths = frame_paths
 
 
 class RuleEngine:
-    """规则引擎"""
-    
-    def __init__(self, config: Dict):
-        self.config = config
-        self.rules_config = config.get('rules', {})
-        
-        # 加载关键词模板
-        self.keyword_templates = self._load_keyword_templates()
-        
-        # 初始化中文分词
-        try:
-            jieba.initialize()
-        except:
-            pass
-        
-        # 缓存
-        self.cache = {}
-    
-    def _load_keyword_templates(self) -> Dict:
-        """加载关键词模板"""
-        template_path = self.rules_config.get(
-            'template_path', 
-            'config/keywords.json'
+    def __init__(self, template_path: str = "config/keywords.json"):
+        self.template_path = template_path
+        self.keywords = self._load_templates()
+
+        # 装配责任链
+        self.handler_chain = (
+            PhoneUsageHandler()
+            .set_next(SleepingHandler())
+            .set_next(GeneralKeywordHandler())
         )
-        
-        default_templates = {
-            "安防监控": ["闯入", "异常", "打架", "跌倒", "火灾", "烟雾", "入侵"],
-            "课堂分析": ["玩手机", "睡觉", "交头接耳", "讲话", "看手机", "聊天"],
-            "产品演示": ["包装", "logo", "价格", "二维码", "条形码", "商标"],
-            "自定义场景": []
-        }
-        
-        if Path(template_path).exists():
-            try:
-                with open(template_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                print(f"⚠️  无法加载关键词模板，使用默认模板")
-                return default_templates
-        else:
-            # 创建默认模板文件
-            with open(template_path, 'w', encoding='utf-8') as f:
-                json.dump(default_templates, f, ensure_ascii=False, indent=2)
-            return default_templates
-    
+
+    def _load_templates(self) -> Dict:
+        """从配置文件加载关键词模板"""
+        path = Path(self.template_path)
+        if not path.exists():
+            print(f"⚠️  未找到关键词模板: {path}，使用默认配置")
+            return {"default": []}
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+
     def parse_query(self, query: str) -> List[str]:
-        """解析查询语句，提取关键词"""
-        # 检查是否是预设模板
-        template_keywords = self._match_template(query)
-        if template_keywords:
-            return template_keywords
-        
-        # 中文分词提取关键词
-        chinese_keywords = self._extract_chinese_keywords(query)
-        
-        # 英文关键词提取
-        english_keywords = self._extract_english_keywords(query)
-        
-        # 合并关键词
-        all_keywords = list(set(chinese_keywords + english_keywords))
-        
-        # 去除停用词
-        stopwords = self._load_stopwords()
-        filtered_keywords = [
-            kw for kw in all_keywords 
-            if kw.lower() not in stopwords and len(kw) > 1
-        ]
-        
-        print(f"🔍 解析查询: '{query}' -> 关键词: {filtered_keywords}")
-        return filtered_keywords
-    
-    def _match_template(self, query: str) -> List[str]:
-        """匹配预设模板"""
-        query_lower = query.lower()
-        
-        for category, keywords in self.keyword_templates.items():
-            for keyword in keywords:
-                if keyword in query_lower:
-                    # 返回整个类别的关键词
-                    return keywords
-        
-        return []
-    
-    def _extract_chinese_keywords(self, text: str) -> List[str]:
-        """提取中文关键词"""
-        keywords = []
-        
-        # 使用结巴分词
-        try:
-            words = jieba.lcut(text)
+        """
+        解析用户查询，返回意图关键词列表
+        优先使用责任链处理，若未命中则回退到配置文件匹配
+        """
+        # 责任链尝试
+        chain_result = self.handler_chain.process(query, detections=[], ocr_results=[])
+        if chain_result:
+            keywords = []
+            for item in chain_result:
+                keywords.extend(item.get("action", "").split())
+            return keywords
+
+        # 回退：基于配置文件的简单关键词匹配
+        all_keywords = []
+        for category, words in self.keywords.items():
             for word in words:
-                if len(word) > 1 and not word.isspace():
-                    keywords.append(word)
-        except:
-            # 简单的中文字符提取
-            chinese_chars = re.findall(r'[\u4e00-\u9fff]{2,}', text)
-            keywords.extend(chinese_chars)
-        
-        return keywords
-    
-    def _extract_english_keywords(self, text: str) -> List[str]:
-        """提取英文关键词"""
-        keywords = []
-        
-        # 提取英文单词
-        english_words = re.findall(r'\b[a-zA-Z]{3,}\b', text)
-        
-        # 转换为小写并去重
-        for word in english_words:
-            keywords.append(word.lower())
-        
-        return list(set(keywords))
-    
-    def _load_stopwords(self) -> List[str]:
-        """加载停用词"""
-        stopwords = [
-            '的', '了', '在', '是', '我', '有', '和', '就',
-            '不', '人', '都', '一', '一个', '上', '也', '很',
-            '到', '说', '要', '去', '你', '会', '着', '没有',
-            '看', '好', '自己', '这', 'the', 'and', 'a', 'an',
-            'in', 'on', 'at', 'to', 'for', 'of', 'with', 'by'
-        ]
-        return stopwords
-    
-    def match_keywords(self, segments: List, keywords: List[str], 
-                      fast_mode: bool = True) -> List:
-        """匹配关键词，返回嫌疑段落"""
-        suspect_segments = []
-        
-        for segment in segments:
-            # 快速模式：只检查OCR缓存
-            if fast_mode:
-                if hasattr(segment, 'ocr_cache'):
-                    ocr_texts = segment.ocr_cache
-                else:
-                    # 如果没有OCR缓存，先进行OCR
-                    ocr_texts = self._fast_ocr_segment(segment)
-                    segment.ocr_cache = ocr_texts
-                
-                # 检查是否包含关键词
-                if self._contains_keywords(ocr_texts, keywords):
-                    suspect_segments.append(segment)
-            
-            # 完整模式：检查视觉和文字
+                if word in query:
+                    all_keywords.append(word)
+        return all_keywords if all_keywords else [query]
+
+    def analyze(
+        self,
+        query: str,
+        frames_info: List[Dict],
+        detections: List[List[Dict]],
+        ocr_results: List[List[Dict]],
+        fast_mode: bool = False
+    ) -> List[Evidence]:
+        """
+        主分析入口
+        Args:
+            query: 用户查询文本
+            frames_info: VideoProcessor 返回的帧信息列表
+            detections: 各帧的检测结果列表
+            ocr_results: 各帧的 OCR 结果列表
+            fast_mode: 是否快速模式（会影响证据粒度）
+        Returns:
+            Evidence 对象列表
+        """
+        keywords = self.parse_query(query)
+        print(f"🔑 解析关键词: {keywords}")
+
+        evidences = []
+        ev_id = 0
+
+        # 遍历所有帧，收集潜在证据片段
+        for frame_idx, (frame_info, dets, ocrs) in enumerate(
+            zip(frames_info, detections, ocr_results)
+        ):
+            # 通过责任链生成证据片段
+            segment = self.handler_chain.process(query, dets, ocrs)
+            if segment:
+                ev_id += 1
+                # 提取时间范围（当前帧为中心，前后各1秒）
+                start = max(0, frame_info["timestamp"] - 1)
+                end = frame_info["timestamp"] + 1
+                evidence = Evidence(
+                    evidence_id=f"ev_{ev_id:04d}",
+                    time_range=(start, end),
+                    summary=query,
+                    description=f"在 {frame_info['timestamp']:.1f}秒 附近发现匹配行为",
+                    confidence=0.85 if fast_mode else 0.9,  # 简单示例
+                    detections=dets,
+                    ocr_results=ocrs,
+                    frame_paths=[]
+                )
+                evidences.append(evidence)
+
+        # 合并相邻的短证据
+        evidences = self._merge_adjacent_evidences(evidences)
+        return evidences
+
+    def _merge_adjacent_evidences(self, evidences: List[Evidence],
+                                  max_gap: float = 3.0) -> List[Evidence]:
+        """合并时间相邻的同类证据"""
+        if len(evidences) < 2:
+            return evidences
+        merged = [evidences[0]]
+        for ev in evidences[1:]:
+            last = merged[-1]
+            if ev.time_range[0] - last.time_range[1] <= max_gap:
+                # 合并
+                merged[-1] = Evidence(
+                    evidence_id=last.id,
+                    time_range=(last.time_range[0], ev.time_range[1]),
+                    summary=last.summary,
+                    description=f"{last.description} 至 {ev.time_range[1]:.1f}秒",
+                    confidence=max(last.confidence, ev.confidence),
+                    detections=last.detections + ev.detections,
+                    ocr_results=last.ocr_results + ev.ocr_results,
+                    frame_paths=list(set(last.frame_paths + ev.frame_paths))
+                )
             else:
-                # 这里可以添加更多检查逻辑
-                pass
-        
-        return suspect_segments
-    
-    def _fast_ocr_segment(self, segment) -> List[str]:
-        """快速OCR扫描段落"""
-        # 这里可以实现快速OCR扫描
-        # 暂时返回空列表
-        return []
-    
-    def _contains_keywords(self, texts: List[str], keywords: List[str]) -> bool:
-        """检查文本是否包含关键词"""
-        for text in texts:
-            text_lower = text.lower()
-            for keyword in keywords:
-                if keyword.lower() in text_lower:
-                    return True
-        return False
-    
-    def fuse_evidence(self, segment, detections: List, 
-                     ocr_results: List, keywords: List[str]) -> Optional[Evidence]:
-        """融合证据"""
-        if not detections and not ocr_results:
-            return None
-        
-        # 分析检测结果
-        detection_summary = self._analyze_detections(detections, keywords)
-        
-        # 分析OCR结果
-        ocr_summary = self._analyze_ocr(ocr_results, keywords)
-        
-        # 如果没有相关证据，返回None
-        if not detection_summary and not ocr_summary:
-            return None
-        
-        # 生成证据摘要
-        summary = self._generate_summary(detection_summary, ocr_summary)
-        
-        # 计算置信度
-        confidence = self._calculate_confidence(detections, ocr_results, keywords)
-        
-        # 创建证据对象
-        evidence = Evidence(
-            id=f"evidence_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{segment.start_time}",
-            time_range=(segment.start_time, segment.end_time),
-            summary=summary,
-            description=self._generate_description(detections, ocr_results),
-            confidence=confidence,
-            detections=[det.__dict__ for det in detections] if detections else [],
-            ocr_results=[ocr.__dict__ for ocr in ocr_results] if ocr_results else [],
-            frame_paths=segment.keyframes,
-            video_path=getattr(segment, 'video_path', '')
-        )
-        
-        return evidence
-    
-    def _analyze_detections(self, detections: List, keywords: List[str]) -> str:
-        """分析检测结果"""
-        if not detections:
-            return ""
-        
-        # 统计检测到的对象
-        object_counts = {}
-        for det in detections:
-            label = det.label
-            object_counts[label] = object_counts.get(label, 0) + 1
-        
-        # 生成摘要
-        summary_parts = []
-        for label, count in object_counts.items():
-            summary_parts.append(f"{count}个{label}")
-        
-        return f"检测到 {'、'.join(summary_parts)}"
-    
-    def _analyze_ocr(self, ocr_results: List, keywords: List[str]) -> str:
-        """分析OCR结果"""
-        if not ocr_results:
-            return ""
-        
-        # 提取关键词相关的文本
-        relevant_texts = []
-        for ocr in ocr_results:
-            text = ocr.text
-            for keyword in keywords:
-                if keyword.lower() in text.lower():
-                    relevant_texts.append(text)
-                    break
-        
-        if not relevant_texts:
-            return ""
-        
-        # 去重并截断
-        unique_texts = []
-        for text in relevant_texts:
-            if text not in unique_texts:
-                if len(text) > 20:
-                    unique_texts.append(text[:20] + "...")
-                else:
-                    unique_texts.append(text)
-        
-        return f"识别到文字: {'、'.join(unique_texts[:3])}"  # 最多显示3个
-    
-    def _generate_summary(self, detection_summary: str, 
-                         ocr_summary: str) -> str:
-        """生成证据摘要"""
-        parts = []
-        if detection_summary:
-            parts.append(detection_summary)
-        if ocr_summary:
-            parts.append(ocr_summary)
-        
-        return " | ".join(parts) if parts else "未知事件"
-    
-    def _calculate_confidence(self, detections: List, 
-                             ocr_results: List, 
-                             keywords: List[str]) -> float:
-        """计算证据置信度"""
-        confidence = 0.0
-        
-        # 视觉证据权重
-        if detections:
-            detection_conf = sum(det.confidence for det in detections) / len(detections)
-            confidence += detection_conf * 0.7  # 视觉权重70%
-        
-        # 文字证据权重
-        if ocr_results:
-            ocr_conf = sum(ocr.confidence for ocr in ocr_results) / len(ocr_results)
-            confidence += ocr_conf * 0.3  # 文字权重30%
-        
-        # 关键词匹配加成
-        keyword_bonus = 0.0
-        all_texts = [ocr.text for ocr in ocr_results] if ocr_results else []
-        
-        for keyword in keywords:
-            for text in all_texts:
-                if keyword.lower() in text.lower():
-                    keyword_bonus += 0.1
-                    break
-        
-        confidence = min(1.0, confidence + min(keyword_bonus, 0.2))
-        
-        return confidence
-    
-    def _generate_description(self, detections: List, 
-                            ocr_results: List) -> str:
-        """生成详细描述"""
-        descriptions = []
-        
-        # 视觉检测描述
-        if detections:
-            obj_counts = {}
-            for det in detections:
-                label = det.label
-                obj_counts[label] = obj_counts.get(label, 0) + 1
-            
-            obj_desc = []
-            for label, count in obj_counts.items():
-                obj_desc.append(f"{count}个{label}")
-            
-            if obj_desc:
-                descriptions.append(f"视觉检测: 发现{', '.join(obj_desc)}")
-        
-        # OCR结果描述
-        if ocr_results:
-            unique_texts = []
-            for ocr in ocr_results[:3]:  # 最多显示3个
-                text = ocr.text
-                if len(text) > 15:
-                    text = text[:15] + "..."
-                if text not in unique_texts:
-                    unique_texts.append(text)
-            
-            if unique_texts:
-                descriptions.append(f"文字识别: {', '.join(unique_texts)}")
-        
-        return " | ".join(descriptions) if descriptions else "无详细描述"
-    
-    def save_rules(self, category: str, keywords: List[str]):
-        """保存规则到模板"""
-        if category in self.keyword_templates:
-            self.keyword_templates[category] = keywords
-            
-            # 保存到文件
-            template_path = self.rules_config.get(
-                'template_path', 
-                'config/keywords.json'
-            )
-            
-            with open(template_path, 'w', encoding='utf-8') as f:
-                json.dump(self.keyword_templates, f, ensure_ascii=False, indent=2)
-            
-            print(f"✅ 已保存规则: {category} -> {keywords}")
-    
-    def load_custom_rules(self, rule_file: str):
-        """加载自定义规则"""
-        if Path(rule_file).exists():
-            try:
-                with open(rule_file, 'r', encoding='utf-8') as f:
-                    custom_rules = json.load(f)
-                
-                # 合并规则
-                for category, keywords in custom_rules.items():
-                    if category in self.keyword_templates:
-                        self.keyword_templates[category].extend(keywords)
-                    else:
-                        self.keyword_templates[category] = keywords
-                
-                print(f"✅ 已加载自定义规则: {rule_file}")
-                
-            except Exception as e:
-                print(f"❌ 加载自定义规则失败: {e}")
+                merged.append(ev)
+        return merged
