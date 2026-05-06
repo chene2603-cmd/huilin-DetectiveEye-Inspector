@@ -1,4 +1,10 @@
-# huilin-DetectiveEye Inspector
+### 📌 补充说明
+
+1. **截图建议**：在 `outputs/visualizations/` 里放一张分析结果截图，作为 `assets/screenshot.png`，在 README 顶部用 `![screenshot](assets/screenshot.png)` 展示，效果更好。
+
+2. **Badge 徽章**：你可以把项目公开后，用 [shields.io](https://shields.io) 生成更多实时徽章（如 Stars、Last Commit 等）。
+
+3. **演示视频**：如果条件允许，上传一段演示视频到 YouTube/Bilibili，链接放在 README 中，对项目展示非常加分。# huilin-DetectiveEye Inspector
 
 > 🕵️ 零API依赖 · 纯本地运行 · 视频行为智能分析系统
 
