@@ -59,4 +59,4 @@ class CacheManager:
     def clear_all(self):
         for cache_file in self.cache_dir.glob("*.pkl"):
             cache_file.unlink()
-        print("🧹 缓存已全部清空")！
+        print("🧹 缓存已全部清空")
