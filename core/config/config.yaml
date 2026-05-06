@@ -1,0 +1,33 @@
+# DetectiveEye Inspector 主配置文件
+
+system:
+  max_workers: 4                  # 最大并行线程数
+  gpu_memory_limit: 0.8           # GPU 显存使用上限（比例）
+  temp_cleanup: true              # 分析后自动清理临时文件
+  ffmpeg_path: 'runtime/ffmpeg/ffmpeg'  # FFmpeg 路径（未安装会自动下载）
+
+video:
+  preview_fps: 1                  # 快速预览模式的采样帧率
+  detail_fps: 6                   # 精细分析模式的采样帧率
+  scene_threshold: 0.3            # 场景切换检测阈值（0-1，越小越敏感）
+
+models:
+  yolo:
+    model_path: 'models/yolov8n.pt'  # YOLO 模型路径
+    confidence: 0.4               # 检测置信度阈值
+    batch_size: 8                 # 批处理大小
+    gpu_memory_limit: 0.8         # GPU 显存限制
+  ocr:
+    languages:                    # OCR 识别语言
+      - ch_sim                    # 简体中文
+      - en                        # 英文
+    gpu: true                     # 是否使用 GPU
+    batch_size: 16                # 批处理大小
+
+rules:
+  template_path: 'config/keywords.json'  # 关键词模板文件路径
+
+output:
+  format: 'both'                  # 报告输出格式（both / json / md）
+  save_frames: true               # 是否保存证据帧图片
+  frame_quality: 0.8              # 帧保存质量（0-1）
